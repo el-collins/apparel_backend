@@ -5,22 +5,8 @@ import dotenv from "dotenv";
 import { writeFile, mkdir, unlink } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import { initializeApp, cert } from "firebase-admin/app";
-import { getStorage } from "firebase-admin/storage";
 
 dotenv.config();
-
-// Load the service account key JSON file
-const serviceAccount = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-
-// Initialize Firebase with service account
-initializeApp({
-  credential: cert(serviceAccount),
-  storageBucket: "ue-apparel-stage.firebasestorage.app", // Updated bucket name
-});
-
-const storage = getStorage();
-const bucket = storage.bucket();
 
 // Get the directory name
 const __filename = fileURLToPath(import.meta.url);
@@ -28,7 +14,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
 app.use("/captures", express.static(path.join(__dirname, "captures")));
 
 // Configuration constants
@@ -53,7 +39,7 @@ async function captureFrontView(browser, url, viewportSettings) {
   await page.setViewport(CONFIG.VIEWPORT);
 
   await page.goto(`${url}/front`, {
-    waitUntil: ["networkidle0"],
+    waitUntil: ["networkidle0", "load"],
     timeout: CONFIG.PAGE_LOAD_TIMEOUT,
   });
 
@@ -78,7 +64,7 @@ async function captureBackView(browser, url, viewportSettings) {
   await page.setViewport(CONFIG.VIEWPORT);
 
   await page.goto(`${url}/back`, {
-    waitUntil: ["networkidle0"],
+    waitUntil: ["networkidle0", "load"],
     timeout: CONFIG.PAGE_LOAD_TIMEOUT,
   });
 
@@ -99,7 +85,14 @@ async function captureBackView(browser, url, viewportSettings) {
 }
 
 async function captureModel(url, viewportSettings) {
-  const browser = await puppeteer.launch();
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+    ],
+  });
 
   try {
     // Capture both views in parallel
@@ -112,37 +105,6 @@ async function captureModel(url, viewportSettings) {
   } finally {
     await browser.close();
   }
-}
-
-async function uploadToFirebaseStorage(imageData, filename) {
-  const file = bucket.file(`captures/${filename}`);
-  const base64Data = imageData.split(";base64,").pop() || "";
-
-  await file.save(Buffer.from(base64Data, "base64"), {
-    contentType: "image/png",
-  });
-
-  console.log(`Uploaded file: captures/${filename}`);
-
-  return `https://storage.googleapis.com/${bucket.name}/${file.name}`;
-
-  // // Get a signed URL that doesn't expire
-  // const [url] = await file.getSignedUrl({
-  //   action: 'read',
-  //   expires: '03-01-2500', // Set a very far future date
-  // });
-
-  // // Convert to a permanent public URL
-  // const publicUrl = url.split('?')[0] + '?alt=media';
-
-  // console.log(`Uploaded file: captures/${filename}`);
-  // return publicUrl;
-
-  // return `https://storage.googleapis.com/${bucket.name}/captures/${filename}`;
-
-  // Alternatively, you could also use Firebase's getDownloadURL() method, which would be even simpler:
-  // const [downloadUrl] = await file.getDownloadURL();
-  // return downloadUrl;
 }
 
 // API endpoint to handle capture requests
@@ -158,28 +120,39 @@ app.post("/api/capture", async (req, res) => {
 
     const images = await captureModel(captureUrl, CONFIG.CAMERA);
 
-    // Upload images to Firebase Storage
-    const [frontUrl, backUrl] = await Promise.all([
-      uploadToFirebaseStorage(
-        images.frontImage || "",
-        `${customizationId}_front.png`
-      ),
-      uploadToFirebaseStorage(
-        images.backImage || "",
-        `${customizationId}_back.png`
-      ),
+    // Ensure the captures directory exists
+    const capturesDir = path.join(__dirname, "captures");
+    await mkdir(capturesDir, { recursive: true });
+
+    const serverUrl = process.env.SERVER_URL || "http://localhost:3001";
+
+    // Save images to firebase cloud storage
+    const frontPath = path.join(
+      __dirname,
+      "captures",
+      `${customizationId}_front.png`
+    );
+    const backPath = path.join(
+      __dirname,
+      "captures",
+      `${customizationId}_back.png`
+    );
+
+    await Promise.all([
+      writeFile(frontPath, images.frontImage.split(";base64,").pop(), "base64"),
+      writeFile(backPath, images.backImage.split(";base64,").pop(), "base64"),
     ]);
 
     console.log("Images saved:", {
-      front: frontUrl,
-      back: backUrl,
+      front: frontPath,
+      back: backPath,
     });
 
     res.json({
       success: true,
       images: {
-        front: frontUrl,
-        back: backUrl,
+        front: `${serverUrl}/captures/${customizationId}_front.png`,
+        back: `${serverUrl}/captures/${customizationId}_back.png`,
       },
     });
 
