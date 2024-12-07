@@ -193,7 +193,7 @@ app.post("/api/capture", async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('Hello Server');
+  res.send('Hello server');
 });
 
 const PORT = process.env.PORT || 3001;
