@@ -60,7 +60,7 @@ async function captureFrontView(browser, url, viewportSettings) {
   await page.setViewport(CONFIG.VIEWPORT);
 
   await page.goto(`${url}/front`, {
-    waitUntil: ["networkidle0"],
+    waitUntil: ["networkidle2"],
     timeout: CONFIG.PAGE_LOAD_TIMEOUT,
   });
 
@@ -85,7 +85,7 @@ async function captureBackView(browser, url, viewportSettings) {
   await page.setViewport(CONFIG.VIEWPORT);
 
   await page.goto(`${url}/back`, {
-    waitUntil: ["networkidle0"],
+    waitUntil: ["networkidle2"],
     timeout: CONFIG.PAGE_LOAD_TIMEOUT,
   });
 
@@ -106,7 +106,11 @@ async function captureBackView(browser, url, viewportSettings) {
 }
 
 async function captureModel(url, viewportSettings) {
-  const browser = await puppeteer.launch();
+  const browser = await puppeteer.launch(
+    {
+      headless: false,
+    }
+  );
 
   try {
     // Capture both views in parallel
