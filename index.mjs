@@ -2,7 +2,6 @@ import puppeteer from "puppeteer";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { writeFile, mkdir, unlink } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import { initializeApp, cert } from "firebase-admin/app";
@@ -10,8 +9,16 @@ import { getStorage } from "firebase-admin/storage";
 
 dotenv.config();
 
-// Load the service account key JSON file
-const serviceAccount = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+// Load the service account key JSON content from environment variable
+const serviceAccountJson = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+if (!serviceAccountJson) {
+  throw new Error('The GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable is not set.');
+}
+
+// Parse the JSON content
+const serviceAccount = JSON.parse(serviceAccountJson);
+
 
 // Initialize Firebase with service account
 initializeApp({

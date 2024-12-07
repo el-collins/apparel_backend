@@ -2,20 +2,30 @@ import puppeteer from "puppeteer";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { writeFile, mkdir, unlink } from "fs/promises";
-import path from "path";
-import { fileURLToPath } from "url";
+import fs from "fs";
+import https from "https";
+import { initializeApp, cert } from "firebase-admin/app";
+import { getStorage } from "firebase-admin/storage";
+import http from "http";
+
 
 dotenv.config();
 
-// Get the directory name
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Load the service account key JSON file
+const serviceAccount = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+// Initialize Firebase with service account
+initializeApp({
+  credential: cert(serviceAccount),
+  storageBucket: "ue-apparel-stage.firebasestorage.app", // Updated bucket n>
+});
+
+const storage = getStorage();
+const bucket = storage.bucket();
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "50mb" }));
-app.use("/captures", express.static(path.join(__dirname, "captures")));
+app.use(express.json());
 
 // Configuration constants
 const CONFIG = {
@@ -39,7 +49,7 @@ async function captureFrontView(browser, url, viewportSettings) {
   await page.setViewport(CONFIG.VIEWPORT);
 
   await page.goto(`${url}/front`, {
-    waitUntil: ["networkidle0", "load"],
+    waitUntil: ["networkidle0"],
     timeout: CONFIG.PAGE_LOAD_TIMEOUT,
   });
 
@@ -51,7 +61,6 @@ async function captureFrontView(browser, url, viewportSettings) {
   const frontImage = await page.evaluate(async () => {
     const canvas = document.querySelector("canvas");
     if (!canvas) return null;
-
     return canvas.toDataURL("image/png");
   });
 
@@ -64,7 +73,7 @@ async function captureBackView(browser, url, viewportSettings) {
   await page.setViewport(CONFIG.VIEWPORT);
 
   await page.goto(`${url}/back`, {
-    waitUntil: ["networkidle0", "load"],
+    waitUntil: ["networkidle0"],
     timeout: CONFIG.PAGE_LOAD_TIMEOUT,
   });
 
@@ -83,16 +92,8 @@ async function captureBackView(browser, url, viewportSettings) {
   await page.close();
   return backImage;
 }
-
 async function captureModel(url, viewportSettings) {
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-    ],
-  });
+  const browser = await puppeteer.launch();
 
   try {
     // Capture both views in parallel
@@ -105,6 +106,37 @@ async function captureModel(url, viewportSettings) {
   } finally {
     await browser.close();
   }
+}
+
+async function uploadToFirebaseStorage(imageData, filename) {
+  const file = bucket.file(`captures/${filename}`);
+  const base64Data = imageData.split(";base64,").pop() || "";
+
+  await file.save(Buffer.from(base64Data, "base64"), {
+    contentType: "image/png",
+  });
+
+  console.log(`Uploaded file: captures/${filename}`);
+
+  return `https://storage.googleapis.com/${bucket.name}/${file.name}`;
+
+  // // Get a signed URL that doesn't expire
+  // const [url] = await file.getSignedUrl({
+  //   action: 'read',
+  //   expires: '03-01-2500', // Set a very far future date
+  // });
+
+  // // Convert to a permanent public URL
+  // const publicUrl = url.split('?')[0] + '?alt=media';
+
+  // console.log(`Uploaded file: captures/${filename}`);
+  // return publicUrl;
+
+  // return `https://storage.googleapis.com/${bucket.name}/captures/${filena>
+
+  // Alternatively, you could also use Firebase's getDownloadURL() method, w>
+  // const [downloadUrl] = await file.getDownloadURL();
+  // return downloadUrl;
 }
 
 // API endpoint to handle capture requests
@@ -120,39 +152,28 @@ app.post("/api/capture", async (req, res) => {
 
     const images = await captureModel(captureUrl, CONFIG.CAMERA);
 
-    // Ensure the captures directory exists
-    const capturesDir = path.join(__dirname, "captures");
-    await mkdir(capturesDir, { recursive: true });
-
-    const serverUrl = process.env.SERVER_URL || "http://localhost:3001";
-
-    // Save images to firebase cloud storage
-    const frontPath = path.join(
-      __dirname,
-      "captures",
-      `${customizationId}_front.png`
-    );
-    const backPath = path.join(
-      __dirname,
-      "captures",
-      `${customizationId}_back.png`
-    );
-
-    await Promise.all([
-      writeFile(frontPath, images.frontImage.split(";base64,").pop(), "base64"),
-      writeFile(backPath, images.backImage.split(";base64,").pop(), "base64"),
+    // Upload images to Firebase Storage
+    const [frontUrl, backUrl] = await Promise.all([
+      uploadToFirebaseStorage(
+        images.frontImage || "",
+        `${customizationId}_front.png`
+      ),
+      uploadToFirebaseStorage(
+        images.backImage || "",
+        `${customizationId}_back.png`
+      ),
     ]);
 
     console.log("Images saved:", {
-      front: frontPath,
-      back: backPath,
+      front: frontUrl,
+      back: backUrl,
     });
 
     res.json({
       success: true,
       images: {
-        front: `${serverUrl}/captures/${customizationId}_front.png`,
-        back: `${serverUrl}/captures/${customizationId}_back.png`,
+        front: frontUrl,
+        back: backUrl,
       },
     });
 
@@ -165,5 +186,27 @@ app.post("/api/capture", async (req, res) => {
   }
 });
 
+app.get("/", (req, res) => {
+  res.send("Hello server");
+});
+
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Capture service running on port ${PORT}`));
+// app.listen(PORT, '0.0.0.0', () => console.log(`Capture service running on ${PORT}`));
+
+const httpsOptions = {
+  key: fs.readFileSync("/home/devops/apparel_backend/selfsigned.key"),
+  cert: fs.readFileSync("/home/devops/apparel_backend/selfsigned.crt"),
+};
+
+https.createServer(httpsOptions, app).listen(443, () => {
+  console.log("HTTPS server running on port 443");
+});
+
+// Redirect HTTP to HTTPS
+http.createServer((req, res) => {
+  res
+    .writeHead(301, {
+      Location: "https://" + req.headers["host"] + req.ur > res.end(),
+    })
+    .listen(80);
+});
